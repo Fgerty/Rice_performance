@@ -1,0 +1,1213 @@
+---
+title: "Provincial performance of rice production in Thailand"
+author: "Nutthapoj S"
+date: "2023-04-10"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+-   This individual study is about production's performance of rice farming at provincial level in Thailand.
+
+-   Data used in this study are from various sources:
+
+    -   Inputs and output of rice production and yield are at the aggregate level provided by Office of Agricultural Economics (OAE)
+
+    -   Data about surface temperature and precipitation are satellite data collected from Google Earth Engine
+
+-   Rice cultivation in Thailand
+
+    -   Main rice: rice that cultivate between May 1st to October 31th, except for some provinces in the South.
+
+    -   Second rice: rice that cultivate between November 1st to April 30th of the next year, except for some provinces in the South.
+
+# Loading functions
+
+```{r Packages, message=FALSE, warning=FALSE}
+rm(list = ls())
+library(readxl) # reading excel files
+library(tidyverse) # data wrangling and visualization
+library(mice) # package for data imputation
+library(purrr)
+
+library(corrplot) # for correlation plot
+# for manual edit in visualization
+library(ggrepel) 
+library(scales) 
+library(ggpubr) 
+#library(gganimate) # for manual edut in visualization
+#library(plotly) # for interactive plot
+library(viridis)
+
+# working with map
+library(sf) 
+library(raster)
+library(rgdal)
+library(spdep)
+
+library(plm) # panel regression
+library(splm) # spatial panel regression
+library(Benchmarking) # performance measurement package
+```
+
+# Import data
+
+```{r Import data}
+setwd("C:/Users/MSI GF62 OEM/Desktop/R programing/data")
+excel_sheets("rice_data.xlsx")
+main <- read_excel("rice_data.xlsx", sheet = "main")
+second <- read_excel("rice_data.xlsx", sheet = "second")
+```
+
+# Data structure and summary
+
+## Structure
+
+Most of the columns are numeric variable except name of province and region.
+
+-   paddy - paddy rice produced
+
+-   land - planted area in rai
+
+-   land_h - harvested area in rai (land \>= land_h)
+
+-   hh - number of farmer household in the province
+
+-   seed - amount of seed used in ton
+
+-   fertilizer - amount of chemical fertilizer used in ton
+
+-   seed_l - amount of seed used per planted area
+
+-   fer_l - amount of fertilizer used per planted area
+
+-   fer_f - amount of fertilizer used per planted area counting only area that report to use fertilizer
+
+-   yield_l - yield or land productivity to the planted area
+
+-   yield_h - yield or land productivity to the harvested area
+
+```{r warning=FALSE}
+str(main)
+str(second)
+```
+
+## Summary by season
+
+-   Production size is relatively bigger in the main rice season.
+
+```{r warning=FALSE}
+summary(main)
+summary(second)
+```
+
+## Summary by season & region
+
+-   Main rice is mainly cultivate in the northeastern region while the second rice is mainly cultivate in the central and northern of Thailand.
+
+```{r warning=FALSE}
+main %>%
+  split(.$region) %>%
+  map(summary)
+second %>%
+  split(.$region) %>%
+  map(summary)
+```
+
+## NA for each rice season
+
+```{r}
+main %>% filter(is.na(hh))
+main %>% group_by(year) %>% 
+  summarize(n_NA = sum(is.na(hh)))
+main %>% group_by(province) %>% 
+  summarize(n_NA = sum(is.na(hh)))
+
+second %>% filter(is.na(hh))
+second %>% group_by(year) %>% 
+  summarize(n_NA = sum(is.na(hh)))
+second %>% group_by(province) %>% 
+  summarize(n_NA = sum(is.na(hh)))
+```
+
+## Select data that I will use for the study
+
+Filter out regional value and select the period that have less missing value
+
+-   2540-2563 for the main rice
+
+-   2540-2564 for the second rice
+
+```{r}
+main4063 <- main %>% filter(ID %in% c(1:99)) %>% filter(year %in% c(2540:2563))
+second4064 <- second %>% filter(ID %in% c(1:99)) %>% filter(year %in% c(2540:2564))
+
+#second4064 <- second %>% filter(ID %in% c(1:99)) %>% filter(between(year,2540,2564))
+main4063$season <- "Main rice"
+second4064$season <- "Second rice"
+all_df <- rbind(main4063,second4064) # combind two farming seasons into the same dataframe
+all_df$year <- as.integer(all_df$year)
+all_df$ID <- as.character(all_df$ID)
+```
+
+# Data Exploratory
+
+## Production size
+
+### Planted area
+
+-   Production of the main rice is bigger than the second rice.
+
+-   The main rice is mainly cultivate in the northeastern region while the second rice is mainly cultivate in the central and northern regions.
+
+```{r warning=FALSE}
+all_df %>% group_by(season, year, region) %>% 
+  summarise(total_paddy = sum(paddy, na.rm = T),
+            total_land = sum(land, na.rm = T)) %>% 
+  ggplot()+
+  geom_bar(aes(x = year, y = total_land, fill = region), position = "stack", stat = "identity")+
+  scale_y_continuous(labels = scales::comma)+
+  scale_x_continuous(labels = as.character(all_df$year), breaks = all_df$year)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  labs(x = "Year", y = "Planted area (rai)", fill = "Region")+
+  facet_wrap(~season, ncol = 1, nrow = 2, scales = "free_y")
+
+```
+
+### Paddy produced
+
+```{r warning=FALSE}
+all_df %>% group_by(season, year, region) %>% 
+  summarise(total_paddy = sum(paddy, na.rm = T),
+            total_land = sum(land, na.rm = T)) %>% 
+  ggplot()+
+  geom_bar(aes(x = year, y = total_paddy, fill = region), position = "stack", stat = "identity")+
+  scale_y_continuous(labels = scales::comma)+
+  scale_x_continuous(labels = as.character(all_df$year), breaks = all_df$year)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  labs(x = "Year", y = "Planted area (rai)", fill = "Region")+
+  facet_wrap(~season, ncol = 1, nrow = 2, scales = "free_y")
+```
+
+### Relation between planted area and paddy produced
+
+-   Planted area and paddy rice produced seem to be positively related.
+
+```{r warning=FALSE}
+all_df %>% ggplot(aes(x = land, y = paddy, color = region))+
+  geom_point(alpha = 0.3)+
+  scale_x_continuous(labels = scales::comma)+
+  scale_y_continuous(labels = scales::comma)+
+  theme_bw()+
+  facet_wrap(~season, ncol = 1, nrow = 2)+
+  labs(x = "Paddy produced (ton)", y = "Planted area (rai)", color = "Region")
+
+```
+
+## Yield of rice
+
+-   Yield of rice tends to be higher for the second rice.
+
+-   Yield in the central and northern region are relatively higher than others for both farming season.
+
+### Histogram
+
+```{r warning=FALSE}
+all_df %>% ggplot(aes(x = yield_h)) +
+  geom_histogram(aes(group = region, fill = region), color = "white", bins = 50)+
+  facet_wrap(~season, ncol = 2, nrow = 1)+
+  labs(x = "Yield")
+```
+
+### The distributions
+
+```{r Box plot, warning=FALSE}
+all_df %>% ggplot(aes(x = yield_h, y = region, color = region))+
+  geom_boxplot()+
+  geom_jitter(alpha = 0.2)+
+  theme(legend.position = "none")+
+  facet_wrap(~season, ncol = 1, nrow = 2)+
+  theme_bw()+
+  labs(x = "Yield")
+```
+
+### Box plot for each province
+
+```{r Box plot for each province, warning=FALSE}
+all_df %>% filter(season == "Main rice") %>% 
+  ggplot(aes(x = yield_h, y = province_e, color = region))+
+  geom_boxplot()+
+  facet_wrap(~region, ncol = 1, scales = "free_y")+
+  theme(legend.position = "none")+
+  labs(title = "Main rice", x = "Yield", y = "")
+all_df %>% filter(season == "Second rice") %>% 
+  ggplot(aes(x = yield_h, y = province_e, color = region))+
+  geom_boxplot()+
+  facet_wrap(~region, ncol = 1, scales = "free_y")+
+  theme(legend.position = "none")+
+  labs(title = "Second rice", x = "Yield", y = "")
+```
+
+```{r eval=FALSE, warning=FALSE, include=FALSE}
+all_df %>% filter(season == "Main rice",year == 2563) %>% 
+  ggplot(aes(x = land, y = yield_h, color = region, label = province))+
+  geom_point(size = 4)+
+  scale_x_continuous(labels = scales::comma)+
+  facet_wrap(~region, scales = "free")+
+  geom_text_repel(color = "black", size = 4, max.overlaps = 15)+
+  labs(title = "Main rice", subtitle = "Yield by kg. in 2563", x = "Planted area", y = "Yield")+
+  theme(legend.position = "none")
+
+all_df %>% filter(season == "Second rice",year == 2563) %>% 
+  ggplot(aes(x = land, y = yield_h, color = region, label = province))+
+  geom_point(size = 4)+
+  scale_x_continuous(labels = scales::comma)+
+  facet_wrap(~region, scales = "free")+
+  geom_text_repel(color = "black", size = 4, max.overlaps = 15)+
+  labs(title = "Second rice", subtitle = "Yield by kg. in 2563", x = "Planted area", y = "Yield")+
+  theme(legend.position = "none")
+```
+
+### Trend of the yield
+
+-   There are some improvement in yield but there is still some gap between central/northern and northeastern/southern.
+
+```{r Trend of yield}
+all_df %>% group_by(season, region, year) %>% 
+  summarize(meanyield = mean(yield_h, na.rm = T)) %>%
+  ggplot(aes(x = year, y = meanyield, color = region))+
+  geom_line(linewidth = 1, alpha = 0.5)+
+  facet_wrap(~season, ncol = 1, nrow = 2)+
+  theme_bw()+
+  scale_x_continuous(labels = as.character(all_df$year), breaks = all_df$year)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  labs(title = "Average yield", y = "Avg Yield")
+```
+
+```{r eval=FALSE, include=FALSE}
+all_df %>% filter(season == "Main rice") %>% 
+  ggplot(aes(x = year, y = yield_h, color = province))+
+  geom_line()+
+  facet_wrap(~region)+
+  theme(legend.position = "none")+
+  labs(title = "Main rice")+
+  theme_bw()
+all_df %>% filter(season == "Second rice") %>% 
+  ggplot(aes(x = year, y = yield_h, color = province))+
+  geom_line()+
+  facet_wrap(~region)+
+  theme(legend.position = "none")+
+  labs(title = "Second rice")+
+  theme_bw()
+#ggarrange(a, b, ncol = 2, nrow = 1, legend = "none")
+```
+
+### Yearly regional median of the yield
+
+```{r warning=FALSE}
+all_df %>% filter(season == "Main rice") %>% 
+  ggplot(aes(x = factor(year), y = yield_h, color = region))+
+  geom_boxplot()+
+  geom_jitter(alpha = 0.3)+
+  facet_wrap(~region)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position="bottom")+
+  labs(title = "Main rice", x = "", y = "Yield")
+
+all_df %>% filter(season == "Second rice") %>% 
+  ggplot(aes(x = factor(year), y = yield_h, color = region))+
+  geom_boxplot()+
+  geom_jitter(alpha = 0.3)+
+  facet_wrap(~region)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+        legend.position="bottom")+
+  labs(title = "Second rice", x = "", y = "Yield")
+```
+
+### Yield and production size
+
+-   Yield and planted area
+
+    -   If look as the pooling data, the relationship seem to be negative for the main rice while positive for the second rice
+
+    -   If look at regional level, the relationship seem more flatten and the negative is only found in the northeastern region for the main rice
+
+```{r warning=FALSE}
+all_df %>% ggplot(aes(x = land, y = yield_h))+
+  geom_point(aes(color = region) , size = 2, alpha = 0.3)+
+  facet_wrap(~season, nrow = 2 , ncol = 1)+
+  geom_smooth(method = "lm", se = F)+
+  scale_x_continuous(labels = scales::comma)+
+  scale_y_continuous(breaks = seq(200,1000, 200), labels = c("200","400","600","800","1,000"))+
+  theme_bw()+
+  facet_wrap(~season, ncol = 1, nrow = 2)+
+  labs(x = "Paddy produced", y = "Yield", color = "Region")
+
+```
+
+```{r warning=FALSE}
+all_df %>% ggplot(aes(x = land, y = yield_h, color = region))+
+  geom_point(size = 2, alpha = 0.3)+
+  facet_wrap(~season, nrow = 2 , ncol = 1)+
+  geom_smooth(method = "lm", se = F)+
+  scale_x_continuous(labels = scales::comma)+
+  scale_y_continuous(breaks = seq(200,1000, 200), labels = c("200","400","600","800","1,000"))+
+  theme_bw()+
+  facet_wrap(~season, ncol = 1, nrow = 2)+
+  labs(x = "Paddy produced", y = "Yield", color = "Region")
+```
+
+# Looking at provincial production on the map
+
+## Load map and merge with data frame
+
+```{r}
+map76 <- st_read("C:/Users/MSI GF62 OEM/Desktop/QGIS 6.3.20/TH_Provice_Map/TH_Provice_Map.shp", stringsAsFactors = FALSE)
+unique(map76$cwt)
+length(unique(map76$cwt))
+
+all_df$ID <- as.numeric(all_df$ID)
+
+all_map <- inner_join(map76, all_df, by = c("cwt" = "ID")) # join by province ID
+```
+
+## plot data on the map
+
+### Planted area
+
+#### Main rice
+
+```{r}
+library(ggpubr) # for joint plot
+a <- all_map %>% filter(season == "Main rice" & year == 2540) %>% 
+  ggplot(aes(frame = year))+
+  geom_sf(aes(fill = land))+
+  scale_fill_gradient(low = "white", high = "blue3", guide = "legend", breaks = c(100000, 500000, 1000000, 1500000, 2000000, 3000000, 4000000))+
+  theme_void()+
+  labs(title="2540", fill = "Planted area")
+b <- all_map %>% filter(season == "Main rice" & year == 2550) %>% 
+  ggplot(aes(frame = year))+
+  geom_sf(aes(fill = land))+
+  scale_fill_gradient(low = "white", high = "blue3", guide = "legend", breaks = c(100000, 500000, 1000000, 1500000, 2000000, 3000000, 4000000))+
+  theme_void()+
+  labs(title="2550", fill = "Planted area")
+c <- all_map %>% filter(season == "Main rice" & year == 2560) %>% 
+  ggplot(aes(frame = year))+
+  geom_sf(aes(fill = land))+
+  scale_fill_gradient(low = "white", high = "blue3", guide = "legend", breaks = c(100000, 500000, 1000000, 1500000, 2000000, 3000000, 4000000))+
+  theme_void()+
+  labs(title="2560", fill = "Planted area")
+ggarrange(a, b, c, ncol = 3, nrow = 1, common.legend = TRUE, legend = "right")
+rm(a,b,c)
+```
+
+#### Second rice
+
+```{r}
+a <- all_map %>% filter(season == "Second rice" & year == 2540) %>% 
+  ggplot(aes(frame = year))+
+  geom_sf(aes(fill = land))+
+  scale_fill_gradient(low = "white", high = "blue3", guide = "legend", breaks = c(10000, 50000, 150000, 300000, 500000, 1000000, 1500000))+
+  theme_void()+
+  labs(title="2540", fill = "Planted area")
+b <- all_map %>% filter(season == "Second rice" & year == 2550) %>% 
+  ggplot(aes(frame = year))+
+  geom_sf(aes(fill = land))+
+  scale_fill_gradient(low = "white", high = "blue3", guide = "legend", breaks = c(10000, 50000, 150000, 300000, 500000, 1000000, 1500000))+
+  theme_void()+
+  labs(title="2550", fill = "Planted area")
+c <- all_map %>% filter(season == "Second rice" & year == 2560) %>% 
+  ggplot(aes(frame = year))+
+  geom_sf(aes(fill = land))+
+  scale_fill_gradient(low = "white", high = "blue3", guide = "legend", breaks = c(10000, 50000, 150000, 300000, 500000, 1000000, 1500000))+
+  theme_void()+
+  labs(title="2560", fill = "Planted area")
+ggarrange(a, b, c, ncol = 3, nrow = 1, common.legend = TRUE, legend = "right")
+rm(a,b,c)
+```
+
+# Import irrigation data and merge with the data frame
+
+```{r}
+irri <- read_excel("C:/Users/MSI GF62 OEM/Desktop/R programing/data/irrigation.xlsx")
+colnames(irri)
+all_df$YID <- paste(all_df$year, all_df$ID, sep = "") # make unique ID for each province and time
+all_df <- left_join(all_df, irri, by = "YID") %>% rename(year = year.x, province = province.x, ID = ID.x)
+rm(irri)
+```
+
+# Check correlation
+
+-   One thing that I want to highlight is that the correlation between yield and paddy rice produce is negative for the main rice while the second rice is positive.
+
+## Main rice
+
+```{r}
+main_cor <- all_df %>% filter(season == "Main rice") %>% 
+  filter(!is.na(hh)) %>% 
+  dplyr::select(6:16, starts_with("iri_")) %>% 
+  cor()
+corrplot(main_cor, type="lower")
+```
+
+## Second rice
+
+```{r}
+second_cor <- all_df %>% filter(season == "Second rice") %>% 
+  filter(!is.na(hh), !is.na(paddy)) %>% 
+  dplyr::select(6:16, starts_with("iri_")) %>% 
+  cor()
+corrplot(second_cor , type="lower")
+```
+
+# Merge values of Bueng Kan back to Nong Khai
+
+-   Changes in number of total provinces causes trouble in the spatial regression session. So I decided to put the values of Bueng Kan province back to Nong Khai province before calculate performance score.
+
+```{r}
+main2 <- main4063
+main2$paddy[main2$ID == 43 & main2$year >= 2554] <- main2$paddy[main2$ID == 38 & main2$year >= 2554] + main2$paddy[main2$ID == 43 & main2$year >= 2554]
+main2$land[main2$ID == 43 & main2$year >= 2554] <- main2$land[main2$ID == 38 & main2$year >= 2554] + main2$land[main2$ID == 43 & main2$year >= 2554]
+main2$hh[main2$ID == 43 & main2$year >= 2554] <- main2$hh[main2$ID == 38 & main2$year >= 2554] + main2$hh[main2$ID == 43 & main2$year >= 2554]
+main2$seed[main2$ID == 43 & main2$year >= 2554] <- main2$seed[main2$ID == 38 & main2$year >= 2554] + main2$seed[main2$ID == 43 & main2$year >= 2554]
+main2$fertilizer[main2$ID == 43 & main2$year >= 2554] <- main2$fertilizer[main2$ID == 38 & main2$year >= 2554] + main2$fertilizer[main2$ID == 43 & main2$year >= 2554]
+main2 <- main2 %>% filter(ID != 38)
+
+second2 <- second4064
+second2$paddy[second2$ID == 43 & second2$year >= 2555] <- second2$paddy[second2$ID == 38 & second2$year >= 2555] + second2$paddy[second2$ID == 43 & second2$year >= 2555]
+second2$land[second2$ID == 43 & second2$year >= 2555] <- second2$land[second2$ID == 38 & second2$year >= 2555] + second2$land[second2$ID == 43 & second2$year >= 2555]
+second2$hh[second2$ID == 43 & second2$year >= 2555] <- second2$hh[second2$ID == 38 & second2$year >= 2555] + second2$hh[second2$ID == 43 & second2$year >= 2555]
+second2$seed[second2$ID == 43 & second2$year >= 2555] <- second2$seed[second2$ID == 38 & second2$year >= 2555] + second2$seed[second2$ID == 43 & second2$year >= 2555]
+second2$fertilizer[second2$ID == 43 & second2$year >= 2555] <- second2$fertilizer[second2$ID == 38 & second2$year >= 2555] + second2$fertilizer[second2$ID == 43 & second2$year >= 2555]
+second2 <- second2 %>% filter(ID != 38)
+```
+
+# Drop some provinces for the second rice
+
+-   In the case of second rice, there are many missing values because some provinces generally don't cultivate second rice due to their physical conditions, such as no suitable irrigation system to provide water source outside the rainy season. To make analysis available and consistent, I drops some provinces from the second rice; Chanthaburi, Krabi, Phangnga, Phuket, Ranong, and Trang.
+
+```{r}
+second2 <- second2 %>% filter(!ID %in% c(22, 81, 82, 83, 85, 92))
+unique(second2$ID)
+length(unique(second2$ID))
+```
+
+# Imputation for missing values
+
+-   For the missing, I impute observation that has only one missing value. If the observation has more than one missing, I left it as it be.
+
+```{r echo=FALSE}
+main2 %>% dplyr::select(year, province, ID, paddy, land, hh, seed, fertilizer) %>% md.pattern() # check the structure of missing values in the main rice
+second2 %>% dplyr::select(year, province, ID, paddy, land, hh, seed, fertilizer) %>% md.pattern() # check the structure of missing values in the second rice
+
+main_imputed <- data.frame(main2,
+  ori = main2$hh,
+  cart = complete(mice(main2, m = 5, method = "cart", maxit = 5, seed = 5421), 2)$hh,
+  rf = complete(mice(main2, m = 5, method = "rf", maxit = 5, seed = 5421), 2)$hh)
+
+main_imputed %>% filter(is.na(hh))
+
+second_imputed <- data.frame(second2,
+  ori = second2$hh,
+  cart = complete(mice(second2, m = 5, method = "cart", maxit = 5, seed = 5421), 2)$hh,
+  rf = complete(mice(second2, m = 5, method = "rf", maxit = 5, seed = 5421), 2)$hh)
+
+main3 <- main2
+main3$hh <- main_imputed$cart
+second3 <- second2
+second3$hh <- second_imputed$cart
+
+second3$hh[is.na(second3$paddy)] <- NA
+second3$seed[second3$ID == 95 & second3$year == 2559] <- NA
+second3$fertilizer[second3$ID == 95 & second3$year == 2559] <- NA
+second3$seed_l[second3$ID == 95 & second3$year == 2559] <- NA
+second3$fer_f[second3$ID == 95 & second3$year == 2559] <- NA
+second3$fer_l[second3$ID == 95 & second3$year == 2559] <- NA
+
+```
+
+### Recheck the missing
+
+```{r}
+main3 %>% dplyr::select(year, province, ID, paddy, land, hh, seed, fertilizer) %>% md.pattern()
+second3 %>% dplyr::select(year, province, ID, paddy, land, hh, seed, fertilizer) %>% md.pattern()
+second3 %>% filter(is.na(paddy))
+```
+
+# Benchmarking - Performance
+
+In the performance analysis, I calculate technical efficiency score and total factor productivity of rice production using Benchmarking package.
+
+-   The calculation employ the data envelopment analysis (DEA) method which is a non-parametric approach. Benefits of the DEA is that it does not require a prior functional specification to proxy the relation of input and output in the production process and not require assumption on the distribution of the inefficiency.
+
+-   Inputs in rice production including planted area, number of farmer household, amount of seed used, and amount of chemical fertilizer used. The output is paddy rice produced by each province.
+
+-   For more details please refers to *An Introduction to Efficiency and Productivity Analysis* by Coelli et al. (2005).
+
+```{r echo=FALSE}
+mq_main <- malmquist(X = as.data.frame(main3[,c(7,9:11)]), Y = as.data.frame(main3[,6]), 
+                     main3$ID, TIME = main3$year, RTS = "crs", ORIENTATION = "out")
+mq_second <- malmquist(X = as.data.frame(second3[,c(7,9:11)]), Y = as.data.frame(second3[,6]), 
+                     second3$ID, TIME = second3$year, RTS = "crs", ORIENTATION = "out")
+
+```
+
+# Collect the results
+
+-   Collecting and converting the results into a meaningful score.
+
+```{r}
+main_mq <- data.frame(
+  main3,
+  te = 1/mq_main$e11,
+  tec = 1/mq_main$ec,
+  tcc = 1/mq_main$tc,
+  tfpc = 1/mq_main$m)
+
+second_mq <- data.frame(
+  second3,
+  te = 1/mq_second$e11,
+  tec = 1/mq_second$ec,
+  tcc = 1/mq_second$tc,
+  tfpc = 1/mq_second$m)
+
+second_mq$te[second_mq$te == Inf] <- NA
+second_mq$tec[second_mq$tec == Inf] <- NA
+second_mq$tec[second_mq$tec == 0.000] <- NA
+second_mq$tcc[is.na(second_mq$tcc)] <- NA
+second_mq$tfpc[is.na(second_mq$tfpc)] <- NA
+
+all_mq <- rbind(main_mq, second_mq)
+all_map <- inner_join(map76, all_mq, by = c("cwt" = "ID")) # join by province ID
+#library(xlsx)
+#write.xlsx(all_mq, file="C:/Users/MSI GF62 OEM/Desktop/R programing/data/all_mq.xlsx", row.names=FALSE)
+
+```
+
+# Results of TE score
+
+The technical efficiency (TE) score computed in this study is output-oriented. The score has a value between 0 to 1. TE score of 1 is the technical efficient unit and will be used as the point to construct the frontier line.. The interpretation is in percentage terms. If a province in given year has output-oriented TE score 0.75, this means the province should be able to increase output by 25% while using the same amount of inputs to reach the efficient frontier. So, the closer to 1, the more technical efficient unit (province) is in farming.
+
+## Create geometric average function
+
+-   I will use the geometric mean instead of arithmetic mean but there is no generic function in R so I need to create one.
+
+```{r Create geometric average function}
+geomean <- function(x, ...) {
+  prod(x, ...)^(1/sum(!is.na(x)))
+}
+```
+
+## Top average performance province
+
+### Main rice
+
+```{r}
+all_mq %>% filter(season == "Main rice") %>% 
+  group_by(region, province_e) %>% 
+  summarise(avg.te = geomean(te, na.rm = T)) %>% 
+  arrange(desc(avg.te))
+```
+
+### Second rice
+
+```{r}
+all_mq %>% filter(season == "Second rice") %>% 
+  group_by(region, province_e) %>% 
+  summarise(avg.te = geomean(te, na.rm = T)) %>% 
+  arrange(desc(avg.te))
+```
+
+```{r}
+all_mq %>% group_by(season, region, province_e) %>% 
+  summarise(avg.te = geomean(te, na.rm = T)) %>% 
+  filter(season == "Main rice") %>%
+  ungroup() %>% 
+  mutate(province_e = fct_reorder(province_e, avg.te)) %>% 
+  ggplot(aes(x = province_e, y = avg.te))+
+  geom_segment(aes(xend=province_e, yend=0, color = region))+
+  geom_point(aes(color = region), size = 2.5)+
+  labs(title = "Main rice", x = "", y = "Average TE score", color = "Region")+
+  coord_flip()
+
+all_mq %>% group_by(season, region, province_e) %>% 
+  summarise(avg.te = geomean(te, na.rm = T)) %>% 
+  filter(season == "Second rice") %>%
+  ungroup() %>% 
+  mutate(province_e = fct_reorder(province_e, avg.te)) %>% 
+  ggplot(aes(x = province_e, y = avg.te))+
+  geom_segment(aes(xend=province_e, yend=0, color = region))+
+  geom_point(aes(color = region), size = 2.5)+
+  labs(title = "Second rice", x = "", y = "Average TE score", color = "Region")+
+  coord_flip()
+```
+
+## Histogram of TE score
+
+-   Provinces in the Central and North seem to clustered in high TE score.
+
+```{r Histogram, warning=FALSE}
+all_mq %>% ggplot(aes(x = te)) +
+  geom_histogram(aes(group = region, fill = region), color = "white", bins = 50)+
+  facet_wrap(~season, ncol = 1, nrow = 2)+
+  labs(x = "TE score", y = "", fill = "Region")
+```
+
+```{r eval=FALSE, include=FALSE}
+all_mq %>% group_by(season, region, province_e) %>% 
+  summarise(avg.te = geomean(te, na.rm = T)) %>% 
+  filter(season == "Main rice") %>%
+  mutate(province_e = fct_reorder(province_e, desc(avg.te))) %>% 
+  ggplot(aes(x = province_e, y = avg.te))+
+  geom_bar(aes(fill = region), stat = "identity")+
+  coord_flip()
+    
+```
+
+```{r eval=FALSE, include=FALSE}
+all_mq %>% group_by(season, region, province_e) %>% 
+  summarise(avg.te = geomean(te, na.rm = T)) %>% 
+  filter(season == "Main rice") %>%
+  ungroup() %>% 
+  mutate(province_e = fct_reorder(province_e, desc(avg.te))) %>% 
+  ggplot(aes(x = province_e, y = avg.te))+
+  geom_bar(aes(fill = region), stat = "identity")+
+  coord_flip()
+```
+
+## Average TE score for each province
+
+-   Central and North provinces tend to be more efficient at rice farming.
+
+```{r}
+a <- all_mq %>% filter(season == "Main rice") %>% 
+  group_by(ID) %>% 
+  summarise(avg.te = geomean(te, na.rm = T))
+a <- left_join(map76, a, by = c("cwt" = "ID"))
+
+a %>% ggplot()+
+  geom_sf(aes(fill = avg.te))+
+  scale_fill_gradient(low = "white",
+                      high = "blue3",
+                      breaks = c(0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
+                      labels = c("less than 40%", "40-50%","50-60%","60-70%","70-80%","80-85%","85-90%","90-95%","95-100%"),
+                      name="Average TE score",
+                      limits=c(0.4, 1),
+                      guide = "legend")+
+  theme_void() +
+  labs(title = "Main rice")+
+  theme(plot.title = element_text(hjust = 0.5), legend.text=element_text(size = 8), 
+        legend.title=element_text(size=7.8), text=element_text(family="serif"))
+
+b <- all_mq %>% filter(season == "Second rice") %>% 
+  group_by(ID) %>% 
+  summarise(avg.te = geomean(te, na.rm = T))
+b <- left_join(map76, b, by = c("cwt" = "ID"))
+
+b %>% ggplot()+
+  geom_sf(aes(fill = avg.te))+
+  scale_fill_gradient(low = "white",
+                      high = "blue3",
+                      breaks = c(0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
+                      labels = c("less than 40%", "40-50%","50-60%","60-70%","70-80%","80-85%","85-90%","90-95%","95-100%"),
+                      name="Average TE score",
+                      limits=c(0.4, 1),
+                      guide = "legend")+
+  theme_void() +
+  labs(title = "Second rice")+
+  theme(plot.title = element_text(hjust = 0.5), legend.text=element_text(size = 8), 
+        legend.title=element_text(size=7.8), text=element_text(family="serif"))
+```
+
+## Average TE score for each region
+
+```{r eval=FALSE, warning=FALSE, include=FALSE}
+main_mq %>% group_by(year, region) %>% 
+  summarise(avg.te = geomean(te, na.rm = T),
+            avg.tec = geomean(tec, na.rm = T),
+            avg.tcc = geomean(tcc, na.rm = T),
+            avg.tfpc = geomean(tfpc, na.rm = T)) %>% 
+  ggplot()+
+  geom_line(aes(x = year, y = avg.te, group = region, color = region))+
+  labs(title = "Main rice", x = "Average TE score", y = "")
+
+second_mq %>% group_by(year, region) %>% 
+  summarise(avg.te = geomean(te, na.rm = T),
+            avg.tec = geomean(tec, na.rm = T),
+            avg.tcc = geomean(tcc, na.rm = T),
+            avg.tfpc = geomean(tfpc, na.rm = T)) %>% 
+  ggplot()+
+  geom_line(aes(x = year, y = avg.te, group = region, color = region))+
+  labs(title = "Second rice", x = "Average TE score", y = "")
+```
+
+```{r warning=FALSE}
+all_mq %>% group_by(season, year, region) %>% 
+  summarise(avg.te = geomean(te, na.rm = T),
+            avg.tec = geomean(tec, na.rm = T),
+            avg.tcc = geomean(tcc, na.rm = T),
+            avg.tfpc = geomean(tfpc, na.rm = T)) %>% 
+  ggplot()+
+  geom_line(aes(x = year, y = avg.te, group = region, color = region),
+            size = 1.2, alpha = 0.5)+
+  labs(y = "Average TE score", x = "")+
+  scale_x_continuous(labels = as.character(all_mq$year), breaks = all_mq$year)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  facet_wrap(~season, nrow = 2, ncol = 1)
+```
+
+## Average TE score to the production size
+
+```{r warning=FALSE}
+all_mq %>% group_by(season, region, province_e) %>% 
+  summarise(avg.te = geomean(te, na.rm = T),
+            avg.land = mean(land, na.rm = T),
+            avg.paddy = mean(paddy, na.rm = T)) %>% 
+  ggplot(aes(x = avg.land, y = avg.te, size = avg.paddy, color = region, label = province_e))+
+  geom_point(alpha = 0.4, )+
+  geom_text(hjust=0.5, vjust=0.2, size = 3)+
+  labs(y = "Average TE score", x = "Planted area")+
+  scale_x_continuous(labels = scales::comma)+
+  facet_wrap(~season, scales = "free_x", nrow = 2, ncol = 1)
+```
+
+```{r warning=FALSE}
+all_mq %>% filter(season == "Main rice") %>% 
+  group_by(region, province_e) %>% 
+  summarise(avg.te = geomean(te, na.rm = T),
+            avg.land = mean(land, na.rm = T),
+            avg.paddy = mean(paddy, na.rm = T)) %>% 
+  ggplot(aes(x = avg.land, y = avg.te, size = avg.paddy, color = region, label = province_e))+
+  geom_point(alpha = 0.4, )+
+  geom_text(hjust=0.5, vjust=0.2, size = 3)+
+  labs(y = "Average TE score", x = "Planted area", size = "Paddy produced", title = "Main rice")+
+  scale_x_continuous(labels = scales::comma)+
+  scale_size(breaks = c(50000,100000, 250000, 400000, 600000, 1000000, 2000000), range = c(2, 10), labels = scales::comma)
+
+all_mq %>% filter(season == "Second rice") %>% 
+  group_by(region, province_e) %>% 
+  summarise(avg.te = geomean(te, na.rm = T),
+            avg.land = mean(land, na.rm = T),
+            avg.paddy = mean(paddy, na.rm = T)) %>% 
+  ggplot(aes(x = avg.land, y = avg.te, size = avg.paddy, color = region, label = province_e))+
+  geom_point(alpha = 0.4, )+
+  geom_text(hjust=0.5, vjust=0.2, size = 3)+
+  labs(y = "Average TE score", x = "Planted area", size = "Paddy produced", title = "Second rice")+
+  scale_x_continuous(labels = scales::comma)+
+  scale_size(breaks = c(50000,100000, 250000, 400000, 600000, 1000000), range = c(2, 10), labels = scales::comma)
+```
+
+## Yield and TE score
+
+-   Yield and TE score seem to have positive relation when look at the data as a whole. But when look at the relation at each region, northeastern and southern regions seems to have negative relationship between yield and TE score.
+
+-   The main rice that cultivated mainly in the Northeast are relatively bigger than other provinces. The farming in this provinces may already in the decreasing return to scale of production.
+
+```{r}
+all_mq %>% ggplot(aes(x = yield_h, y = te))+
+  geom_point(aes(color = region), alpha = 0.3)+
+  geom_smooth(method = "lm", se = F)+
+  facet_wrap(~season, ncol = 1, nrow = 2)+
+  labs(x = "Yield", y = "TE score", color = "Region")
+
+all_mq %>% ggplot(aes(x = yield_h, y = te, color = region))+
+  geom_point(alpha = 0.3)+
+  geom_smooth(method = "lm", se = F)+
+  facet_wrap(~season, ncol = 1, nrow = 2)+
+  labs(x = "Yield", y = "TE score", color = "Region")
+```
+
+# Results of TFP growth
+
+```{r}
+all_mq %>% group_by(season, year, region) %>% 
+  summarise(avg.tfpc = (geomean(tfpc, na.rm = T)-1)*100) %>% 
+  ggplot()+
+  geom_line(aes(x = year, y = avg.tfpc, group = region, color = region))+
+  labs(y = "Average TFP growth (%)", x = "")+
+  facet_wrap(~season, nrow = 2, ncol = 1)
+```
+
+# Make chain index
+
+-   This will show the cumulative improvement in TFP for each province compare to the start period; greater than 1 is progress and less than 1 is regress.
+
+```{r}
+all_mq$tfpc_a <- all_mq$tfpc
+all_mq$tfpc_a[all_mq$year == 2540] <- 1
+all_mq$tfpc_a[all_mq$year != 2540 & is.na(all_mq$tfpc_a)] <- 1 # given all NA to be 1
+all_mq <- all_mq %>% group_by(season, ID) %>% 
+  mutate(chain_TFP = cumprod(tfpc_a)) %>% 
+  ungroup()
+```
+
+Top progress provinces
+
+```{r}
+all_mq %>% filter(season == "Main rice" & year == 2563) %>% 
+  dplyr::select(province, region, season, chain_TFP) %>% 
+  arrange(desc(chain_TFP))
+
+all_mq %>% filter(season == "Second rice" & year == 2563) %>% 
+  dplyr::select(province, region, season, chain_TFP) %>% 
+  arrange(desc(chain_TFP))
+```
+
+Most regress provinces
+
+```{r}
+all_mq %>% filter(season == "Main rice" & year == 2563) %>% 
+  dplyr::select(province, region, season, chain_TFP) %>% 
+  arrange(chain_TFP)
+
+all_mq %>% filter(season == "Second rice" & year == 2563) %>% 
+  dplyr::select(province, region, season, chain_TFP) %>% 
+  arrange(chain_TFP)
+```
+
+```{r}
+all_mq %>% ggplot()+
+  geom_line(aes(x = year, y = chain_TFP, group = province_e, color = region))+
+  labs(y = "TFP chain index (%)", x = "")+
+  facet_wrap(~season, nrow = 2, ncol = 1)+
+  theme(legend.position="none")
+
+```
+
+# Prepare for regression
+
+## Import other data
+
+```{r}
+rm(list=setdiff(ls(), c("all_mq"))) 
+
+# separate farming season
+main_df <- all_mq %>% filter(season == "Main rice")
+second_df <- all_mq %>% filter(season == "Second rice")
+
+# reading temp and total precipitation df
+setwd("C:/Users/MSI GF62 OEM/Desktop/R programing/data")
+temp_main <- read_excel("tempc_all.xlsx", sheet = "main")
+temp_second <- read_excel("tempc_all.xlsx", sheet = "second")
+tpre_main <- read_excel("tpre_all.xlsx", sheet = "main")
+tpre_second <- read_excel("tpre_all.xlsx", sheet = "second")
+temp_main$Year <- temp_main$Year + 543
+tpre_main$Year <- tpre_main$Year + 543
+temp_second$Year <- temp_second$Year + 543
+tpre_second$Year <- tpre_second$Year + 543
+
+
+# reading irri df 
+irri <- read_excel("C:/Users/MSI GF62 OEM/Desktop/R programing/data/irrigation.xlsx")
+
+# reading gpp df
+gpp <- read_excel("C:/Users/MSI GF62 OEM/Desktop/R programing/data/GPP.xlsx", sheet = "gpp_76")
+
+# reading high yielding
+hy_main <- read_excel("C:/Users/MSI GF62 OEM/Desktop/R programing/data/variety_completed.xlsx", sheet = "main")
+hy_second <- read_excel("C:/Users/MSI GF62 OEM/Desktop/R programing/data/variety_completed.xlsx", sheet = "second")
+```
+
+## Merge data
+
+```{r}
+main_df <- left_join(main_df, irri, by = c("ID" = "ID", "year" = "year"))
+main_df <- left_join(main_df, hy_main, by = c("ID" = "ID", "year" = "year"))
+main_df <- left_join(main_df, temp_main, by = c("ID" = "ID", "year" = "Year"))
+main_df <- left_join(main_df, tpre_main, by = c("ID" = "ID", "year" = "Year"))
+main_df <- left_join(main_df, gpp, by = c("ID" = "ID", "year" = "year_th"))
+
+main_df <- main_df %>% mutate(tfp_g = (tfpc - 1)*100,
+                   damage = (1-(land_h/land))*100,
+                   irri_p_land = iri_sum/land) %>% 
+  dplyr::select(ID, year, province.x, region.x, tfp_g, hy_half_share, 
+                irri_p_land, tempc_new_500, tpre_new_500, damage, 
+                gpp_cvm, gpp_cvm_agri, gpp_cvm_indus, gpp_cvm_ser) %>% 
+  rename("region" = "region.x", 
+         "province" = "province.x", 
+         "temp" = "tempc_new_500",
+         "tpre" = "tpre_new_500")
+
+second_df <- left_join(second_df, irri, by = c("ID" = "ID", "year" = "year"))
+second_df <- left_join(second_df, hy_second, by = c("ID" = "ID", "year" = "year"))
+second_df <- left_join(second_df, temp_second, by = c("ID" = "ID", "year" = "Year"))
+second_df <- left_join(second_df, tpre_second, by = c("ID" = "ID", "year" = "Year"))
+second_df <- left_join(second_df, gpp, by = c("ID" = "ID", "year" = "year_th"))
+
+second_df <- second_df %>% mutate(tfp_g = (tfpc - 1)*100,
+                   damage = (1-(land_h/land))*100,
+                   irri_p_land = iri_sum/land) %>% 
+  dplyr::select(ID, year, province.x, region.x, tfp_g, hy_half_share, 
+                irri_p_land, tempc_new_500, tpre_new_500, damage, 
+                gpp_cvm, gpp_cvm_agri, gpp_cvm_indus, gpp_cvm_ser) %>% 
+  rename("region" = "region.x", 
+         "province" = "province.x", 
+         "temp" = "tempc_new_500",
+         "tpre" = "tpre_new_500")
+
+rm(list=setdiff(ls(), c("all_mq", "main_df", "second_df"))) 
+```
+
+## Remove observation that has missing values
+
+```{r}
+summary(main_df)
+summary(second_df)
+
+main_df <- main_df %>% dplyr::filter(year >= 2545)
+second_df <- second_df %>% dplyr::filter(year >= 2541)
+
+second_df <- second_df %>% dplyr::filter(!ID %in% unique(second_df$ID[is.na(second_df$tfp_g)]))
+```
+
+## Load shp file
+
+```{r}
+THmap_76 <- readOGR(dsn = "C:/Users/MSI GF62 OEM/Desktop/R programing/data/Thai_map", layer = "TH_Provice_Map")
+THmap_76 <- THmap_76[order(THmap_76$ID_1),]
+```
+
+## Create spatial weight matrix
+
+```{r}
+queen.TH76 <- poly2nb(THmap_76, row.names = THmap_76$ID_1)
+queen.TH76[[66]] <- as.integer(65)
+queen.TH76[[65]] <- as.integer(c(64, 66, 67, 68))
+queen.TH76.listw <- nb2listw(queen.TH76)
+plot(queen.TH76,  coordinates(THmap_76), col = "red")
+
+
+## 60 provinces of second rice ####
+THmap_60 <- THmap_76[THmap_76$ID_1 %in% unique(second_df$ID),]
+queen.TH60 <- poly2nb(THmap_60, row.names = THmap_60$ID_1)
+queen.TH60.listw <- nb2listw(queen.TH60)
+plot(queen.TH60,  coordinates(THmap_60), col = "blue")
+
+
+rm(THmap_60, THmap_76, queen.TH60, queen.TH76)
+```
+
+# TFP growth determinant model
+
+## Equation
+
+```{r}
+eq_1 <- tfp_g ~ hy_half_share + irri_p_land + log(temp) + log(tpre) + damage + log(gpp_cvm_agri) + log(gpp_cvm_indus) + log(gpp_cvm_ser)
+```
+
+## Main rice
+
+```{r}
+# pooled ols
+reg1 <- plm(eq_1, data = main_df, index = c("ID", "year"), model = "pooling")
+
+# fixed effect
+reg2 <- plm(eq_1, data = main_df, index = c("ID", "year"), model = "within", effect = "individual")
+
+# random effect
+reg3 <- plm(eq_1, data = main_df, index = c("ID", "year"), model = "random", 
+            random.method = "walhus", effect = "individual")
+
+# pooled spatial lag
+reg4 <- spml(formula = eq_1, data = main_df, index = c("ID", "year"),
+             listw = queen.TH76.listw, model = "pooling", lag = TRUE, spatial.error = "none")
+
+# pooled spatial error
+reg5 <- spml(formula = eq_1, data = main_df, index = c("ID", "year"),
+             listw = queen.TH76.listw, model = "pooling", lag = FALSE, spatial.error = "b")
+
+# fixed effect spatial lag
+reg6 <- spml(formula = eq_1, data = main_df, index = c("ID", "year"), 
+             listw = queen.TH76.listw, model = "within", effect = "individual", 
+             lag = TRUE, spatial.error = "none")
+
+# random effects spatial lag
+reg7 <- spml(formula = eq_1, data = main_df, index = c("ID", "year"), 
+             listw = queen.TH76.listw, model = "random", lag = TRUE, spatial.error = "none")
+
+# fixed effects spatial error
+reg8 <- spml(formula = eq_1, data = main_df, index = c("ID", "year"), 
+             listw = queen.TH76.listw, model = "within", effect = "individual", 
+             lag = FALSE, spatial.error = "b", quiet = TRUE)
+
+# random effects spatial error
+reg9 <- spml(formula = eq_1, data = main_df, index = c("ID", "year"), 
+             listw = queen.TH76.listw, model = "random", lag = FALSE, spatial.error = "b")
+
+```
+
+### Tests
+
+-   The results from tests suggest that there are spatial lag and spatial error dependence in the TFP growth determinant model. It means we should employ spatial regression instead of normal OLS or normal panel regression.
+
+-   Test's results suggest that fixed effect spatial lag and fixed effect spatial error are the most suitable models.
+
+```{r}
+#LM test for random effect VS OLS
+plmtest(reg1) # not reject H0 >> OLS is better
+
+#LM test for fixed effect VS OLS 
+pFtest(reg2, reg1) # not reject H0 >> OLS is better
+
+# Hausman Test for fixed effect VS random effect
+# H0: alpha is not diff >> reject H0 >> use FE model
+phtest(reg2, reg3) # reject H0 >> fixed effect is better
+# spatial test
+
+# moran I
+iden_main <- diag(19)
+mat_main <- listw2mat(queen.TH76.listw)
+matpooled_main <- kronecker(iden_main, mat_main)
+matpooled_mainlistw <- mat2listw(matpooled_main)
+main_df_m <- main_df[order(main_df$year, main_df$ID),]
+reg_main <- lm(eq_1, data = main_df_m)
+lm.morantest(model = reg_main, listw = matpooled_mainlistw)
+lm.LMtests(model = reg_main, listw = matpooled_mainlistw, test = "all")
+
+# Locally robust panel Lagrange Multiplier tests for spatial dependence
+slmtest(formula = eq_1, data = main_df, listw = queen.TH76.listw,  model="pooling", test = "lme") # reject H0 >> spatial error dependence
+
+slmtest(formula = eq_1, data = main_df, listw = queen.TH76.listw,  model="pooling", test = "lml") # reject H0 >> spatial lag dependence
+
+slmtest(formula = eq_1, data = main_df, listw = queen.TH76.listw,  model="pooling", test = "rlme")
+
+slmtest(formula = eq_1, data = main_df, listw = queen.TH76.listw,  model="pooling", test = "rlml")
+
+bsktest(x = eq_1, data = main_df, listw = queen.TH76.listw, test = "LM1") # LM for random effect
+bsktest(x = eq_1, data = main_df, listw = queen.TH76.listw, test = "LM2") # LM for spatial error
+bsktest(x = eq_1, data = main_df, listw = queen.TH76.listw, test = "LMH") # joint LM
+bsktest(x = eq_1, data = main_df, listw = queen.TH76.listw, test = "CLMlambda") # test for spatial error
+bsktest(x = eq_1, data = main_df, listw = queen.TH76.listw, test = "CLMmu") # test for random effect
+# spatial Hausman test
+sphtest(reg6, reg7) # rejcet H0 >> FE spatial lag is better
+sphtest(reg8, reg9) # rejcet H0 >> FE spatial error is better
+```
+
+### Result of the main rice
+
+-   Coefficient of the regressors are different, this is why we should include the spatial effects into consideration.
+
+```{r}
+summary(reg1)
+summary(reg2)
+summary(reg3)
+summary(reg6)
+summary(reg8)
+```
+
+## Second rice
+
+```{r}
+# pooled ols
+regs1 <- plm(eq_1, data = second_df, index = c("ID", "year"), model = "pooling")
+
+# fixed effect
+regs2 <- plm(eq_1, data = second_df, index = c("ID", "year"), model = "within", effect = "individual")
+
+# random effect
+regs3 <- plm(eq_1, data = second_df, index = c("ID", "year"), model = "random", 
+            random.method = "walhus", effect = "individual")
+
+# pooled spatial lag
+regs4 <- spml(formula = eq_1, data = second_df, index = c("ID", "year"),
+             listw = queen.TH60.listw, model = "pooling", lag = TRUE, spatial.error = "none")
+
+# pooled spatial error
+regs5 <- spml(formula = eq_1, data = second_df, index = c("ID", "year"),
+             listw = queen.TH60.listw, model = "pooling", lag = FALSE, spatial.error = "b")
+
+# fixed effect spatial lag
+regs6 <- spml(formula = eq_1, data = second_df, index = c("ID", "year"), 
+             listw = queen.TH60.listw, model = "within", effect = "individual", 
+             lag = TRUE, spatial.error = "none")
+
+# random effects spatial lag
+regs7 <- spml(formula = eq_1, data = second_df, index = c("ID", "year"), 
+             listw = queen.TH60.listw, model = "random", lag = TRUE, spatial.error = "none")
+
+# fixed effects spatial error
+regs8 <- spml(formula = eq_1, data = second_df, index = c("ID", "year"), 
+             listw = queen.TH60.listw, model = "within", effect = "individual", 
+             lag = FALSE, spatial.error = "b", quiet = TRUE)
+
+# random effects spatial error
+regs9 <- spml(formula = eq_1, data = second_df, index = c("ID", "year"), 
+             listw = queen.TH60.listw, model = "random", lag = FALSE, spatial.error = "b")
+```
+
+### Tests
+
+```{r}
+#LM test for random effect VS OLS
+plmtest(regs1) # not reject H0 >> OLS is better
+
+#LM test for fixed effect VS OLS 
+pFtest(regs2, regs1) # not reject H0 >> OLS is better
+
+# Hausman Test for fixed effect VS random effect
+# H0: alpha is not diff >> reject H0 >> use FE model
+phtest(regs2, regs3) # reject H0 >> fixed effect is better
+# spatial test
+
+# moran I
+iden_second <- diag(24)
+mat_second <- listw2mat(queen.TH60.listw)
+matpooled_second <- kronecker(iden_second, mat_second)
+matpooled_secondlistw <- mat2listw(matpooled_second)
+second_df_m <- second_df[order(second_df$year, second_df$ID),]
+reg_second <- lm(eq_1, data = second_df_m)
+lm.morantest(model = reg_second, listw = matpooled_secondlistw)
+lm.LMtests(model = reg_second, listw = matpooled_secondlistw, test = "all")
+
+# Locally robust panel Lagrange Multiplier tests for spatial dependence
+slmtest(formula = eq_1, data = second_df, listw = queen.TH60.listw,  model="pooling", test = "lme") # reject H0 >> spatial error dependence
+
+slmtest(formula = eq_1, data = second_df, listw = queen.TH60.listw,  model="pooling", test = "lml") # reject H0 >> spatial lag dependence
+
+slmtest(formula = eq_1, data = second_df, listw = queen.TH60.listw,  model="pooling", test = "rlme")
+
+slmtest(formula = eq_1, data = second_df, listw = queen.TH60.listw,  model="pooling", test = "rlml")
+
+bsktest(x = eq_1, data = second_df, listw = queen.TH60.listw, test = "LM1") # LM for random effect
+bsktest(x = eq_1, data = second_df, listw = queen.TH60.listw, test = "LM2") # LM for spatial error
+bsktest(x = eq_1, data = second_df, listw = queen.TH60.listw, test = "LMH") # joint LM
+#bsktest(x = eq_1, data = second_df, listw = queen.TH60.listw, test = "CLMlambda") # test for spatial error
+bsktest(x = eq_1, data = second_df, listw = queen.TH60.listw, test = "CLMmu") # test for random effect
+# spatial Hausman test
+sphtest(regs6, regs7) # rejcet H0 >> FE spatial lag is better
+sphtest(regs8, regs9) # rejcet H0 >> FE spatial error is better
+```
+
+### Result of the second rice
+
+```{r}
+summary(regs1)
+summary(regs2)
+summary(regs3)
+summary(regs6)
+summary(regs8)
+```
+
+# Conclusion
+
+-   Rice production in Thailand is different across farming season and across region in the terms of production size and variety that are cultivated.
+
+-   In terms of production efficiency, the second rice production is generally more efficient than the main rice.
+
+-   Provinces in the central and northern regions tend to be more efficient at producing rice than that of the northeastern and southern regions for both rice seasons.
+
+-   The Pearson correlation coefficient also suggests that the production of the main rice may be too big and already exceed the optimal level, especially for provinces in the northeast, while the production of the second rice is still not reached the optimal level yet.
+
+-   For the TFP determinant model, the spatial analysis of the TFP determinant model found the existence of spatial dependence of TFP growth for both rice seasons.
+
+-   The implications of the spatial coefficient of the spatial lag model are 1) there exist spillover effects of the TFP growth among Thai provinces and 2) neighboring provinces that are likely to share some similarity, e.g., soil quality, general weather, cultivating the same variety of rice, and using the same technique in farming, are also likely to have the similar level of performance and TFP improvement.
+
+-   The implication of the spatial coefficient of the spatial error model indicates that the TFP determinant model used in this study may neglect some variables that influence TFP growth. The effect of the omitted variable influence not only the TFP growth of rice in its province (through the error terms) but also influence the TFP of neighboring provinces as well.
+
+-   The area that cannot be harvested to the total of planted area (damage variable in the model) capture the loss from natural disasters, e.g., drought, flood, pest epidemics etc., has a negative impact on both rice seasons.
+
+-   Irrigation area per planted area has a positive impact of TFP growth of the second rice. This may emphasize the important for irrigation system to the second rice farming which is the off-season (out side rainy season) and depend more on irrigation to provide water.
